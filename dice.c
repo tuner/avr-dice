@@ -24,12 +24,19 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 #include <avr/io.h>
-#define F_CPU 1000000UL
 #include <util/delay.h>
 #include <avr/pgmspace.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
+
+#define F_CPU 1000000UL
+
+/* Convenience macros */
+#define set_low(reg, bit) reg &= ~(1 << bit)
+#define set_high(reg, bit) reg |= (1 << bit)
+
 
 #define FACES 6
 #define WAIT_BEFORE_SLEEP 10
@@ -41,9 +48,9 @@
 /*
  * LED layout:
  *
- * 1 - 2
- * 3 4 5
- * 6 - 7
+ * 0 - 1
+ * 2 3 4
+ * 5 - 6
  */
 
 #define DOT_0 (1 << 0)
@@ -106,48 +113,58 @@ static bool button_down() {
  * Beeps for 'len' milliseconds
  */
 static void beep(int len) {
-	PORTB |= _BV(BEEPER);
+	set_high(PORTB, BEEPER);
+
 	for (int a = 0; a < len; a++) {
 		_delay_ms(1);
 	}
-	PORTB &= ~_BV(BEEPER);
+
+	set_low(PORTB, BEEPER);
 }
 
 /*
  * Spins the dice until the button is released. Returns a random number.
  */
-static uint8_t spin(uint8_t seed) {
+static uint16_t spin(uint16_t seed) {
 	while (true) {
 		for (int i = 0; i < sizeof(spin_sequence); i++) {
 			PORTA = spin_sequence[i];
 
-			// Here we generate a "random" number based on the duration the button is held down
-			for (int f = 0; f < 8; f++) {
+			for (int f = 0; f < 32; f++) {
 				seed++;
-				if (seed >= FACES) {
-					seed = 0;
-				}
 
 				if (!button_down()) {
 					return seed;
 				}
 
-				_delay_ms(4);
+				_delay_ms(1);
 			}
 		}
 	}
-
 }
 
 /*
- * Throws the dice. Returns true if the button was pressed during throwing
+ * Tosses the dice. Returns true if the button was pressed during tossing.
  */
-static bool throw(int8_t face) {
+static bool throw(int16_t seed, int16_t previous_seed) {
 
-	uint16_t delay = 20;
+	// Randomize initial face
+	int8_t face = seed % FACES;
 
-	while (delay < 700) {
-		// Increse the delay exponentially
+	// Make tossing more exciting by adding some variation
+	int16_t stop_at = 500 + (seed & 127) * 4;
+
+	// Initial velocity depends on the duration the button was held down.
+	// Seed was incremented by one per millisecond
+	uint16_t duration = seed - previous_seed;
+	if (duration > 1000) {
+		duration = 1000;
+	}
+
+	uint16_t delay = 50 - duration * 45 / 1000;
+
+	while (delay < stop_at) {
+		// Increase the delay exponentially
 		delay += 5 + delay / 4;
 
 		for (int i = 0; i < delay; i++) {
@@ -178,9 +195,9 @@ static bool throw(int8_t face) {
  */
 static void fade() {
 	// http://startingelectronics.com/tutorials/AVR-8-microcontrollers/ATtiny2313-tutorial/P11-PWM/
-    DDRB   |= (1 << PB2);                   // PWM output on PB2
-    TCCR0A = (1 << COM0A1) | (1 << WGM00);  // phase correct PWM mode
-    TCCR0B = (1 << CS01);                   // clock source = CLK/8, start PWM
+	set_high(DDRB, PB2);                    // PWM output on PB2
+	TCCR0A = (1 << COM0A1) | (1 << WGM00);  // phase correct PWM mode
+	TCCR0B = (1 << CS01);                   // clock source = CLK/8, start PWM
 
 	OCR0A = 255;
 	_delay_ms(500);
@@ -190,7 +207,7 @@ static void fade() {
 		_delay_ms(1200 / sizeof(intensity_table));
 	}
 
-	DDRB &= ~(1 << PB2);
+	set_low(DDRB, PB2);
 }
 
 /*
@@ -198,8 +215,8 @@ static void fade() {
  */
 ISR(PCINT1_vect) {
 	sleep_disable();
-	PCMSK1 &= ~(1 << PCINT9);
-	GIMSK &= ~(1 << PCIE1);
+	set_low(PCMSK1, PCINT9);
+	set_low(GIMSK, PCIE1);
 }
 
 /*
@@ -209,9 +226,9 @@ static void sleep() {
 	PORTA = 0;
 	cli();
 
-	// Wake up when button is pressed
-	PCMSK1 |= (1 << PCINT9);
-	GIMSK |= (1 << PCIE1);
+	// Activate pin change interrupt and wake up when button is pressed
+	set_high(PCMSK1, PCINT9);
+	set_high(GIMSK, PCIE1);
 
 	sleep_enable();
 	sleep_bod_disable();
@@ -236,10 +253,9 @@ static void wait_or_sleep() {
  * Called when battery is plugged in
  */
 static void welcome() {
-	for (int i = 0; i < sizeof(faces); i++) {
-		PORTA = faces[i];
-		_delay_ms(1000 / sizeof(faces));
-	}
+	PORTA = 0b01111111;
+	beep(200);
+	PORTA = 0;
 }
 
 int main(void) {
@@ -252,14 +268,16 @@ int main(void) {
 
 	welcome();
 
-	int8_t face = 0;
+	int16_t previous_seed = 0;
+	int16_t seed = 1000;
 	
 	while (true) {
 		wait_or_sleep();
-		face = spin(face);
-		if (!throw(face)) {
+		seed = spin(seed);
+		if (!throw(seed, previous_seed)) {
 			fade();
 		}
+		previous_seed = seed;
 	}
 
 	return(0);
