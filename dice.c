@@ -22,6 +22,8 @@
  * THE SOFTWARE.
  */
 
+#define F_CPU 1000000UL
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <math.h>
@@ -31,12 +33,9 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
-#define F_CPU 1000000UL
-
 /* Convenience macros */
 #define set_low(reg, bit) reg &= ~(1 << bit)
 #define set_high(reg, bit) reg |= (1 << bit)
-
 
 #define FACES 6
 #define WAIT_BEFORE_SLEEP 10
@@ -109,6 +108,10 @@ static bool button_down() {
 	return PINB & _BV(BUTTON);
 }
 
+static void display_figure(int8_t figure) {
+	PORTA = figure;
+}
+
 /*
  * Beeps for 'len' milliseconds
  */
@@ -116,7 +119,7 @@ static void beep(int len) {
 	set_high(PORTB, BEEPER);
 
 	for (int a = 0; a < len; a++) {
-		_delay_ms(1);
+		_delay_us(1000);
 	}
 
 	set_low(PORTB, BEEPER);
@@ -126,56 +129,51 @@ static void beep(int len) {
  * Spins the dice until the button is released. Returns a random number.
  */
 static uint16_t spin(uint16_t seed) {
-	while (true) {
-		for (int i = 0; i < sizeof(spin_sequence); i++) {
-			PORTA = spin_sequence[i];
-
-			for (int f = 0; f < 32; f++) {
-				seed++;
-
-				if (!button_down()) {
-					return seed;
-				}
-
-				_delay_ms(1);
-			}
-		}
+	while (button_down()) {
+		display_figure(spin_sequence[seed / 32 % sizeof(spin_sequence)]);
+		_delay_us(800);
+		seed++;
 	}
+
+	return seed;
 }
 
 /*
  * Tosses the dice. Returns true if the button was pressed during tossing.
  */
-static bool throw(int16_t seed, int16_t previous_seed) {
+static bool throw(uint16_t seed, uint16_t previous_seed) {
 
 	// Randomize initial face
 	int8_t face = seed % FACES;
 
 	// Make tossing more exciting by adding some variation
-	int16_t stop_at = 500 + (seed & 127) * 4;
+	int16_t stop_at = 250 + (seed % 128) * 4;
+
+	int8_t quotient = 1 + (seed / 4) % 6;
 
 	// Initial velocity depends on the duration the button was held down.
 	// Seed was incremented by one per millisecond
 	uint16_t duration = seed - previous_seed;
-	if (duration > 1000) {
-		duration = 1000;
+	if (duration > 1023) {
+		duration = 1023;
 	}
 
-	uint16_t delay = 50 - duration * 45 / 1000;
+	// Powers of two are preferred in arithmetic constants because they compile to shorter machine code
+	uint16_t delay = 68 - duration * 64 / 1024;
 
 	while (delay < stop_at) {
 		// Increase the delay exponentially
-		delay += 5 + delay / 4;
+		delay += 3 + delay / quotient;
 
 		for (int i = 0; i < delay; i++) {
-			_delay_ms(1);
+			_delay_us(1000);
 
 			if (button_down()) {
 				return true;
 			}
 		}
 
-		PORTA = faces[face];
+		display_figure(faces[face]);
 
 		beep(3);
 
@@ -191,7 +189,7 @@ static bool throw(int16_t seed, int16_t previous_seed) {
 }
 
 /*
- * LED fade effect
+ * Fade out effect for decoration leds
  */
 static void fade() {
 	// http://startingelectronics.com/tutorials/AVR-8-microcontrollers/ATtiny2313-tutorial/P11-PWM/
@@ -243,7 +241,19 @@ static void wait_or_sleep() {
 	int16_t wait = 1000 * WAIT_BEFORE_SLEEP;
 	while (wait-- > 0) {
 		if (button_down()) return;
-		_delay_ms(1);
+		_delay_us(1000);
+	}
+
+	uint8_t figure = PORTA;
+
+	// Fade dice out using a cheap software PWM
+	for (int8_t a = 0; a < 127; a++) {
+		uint8_t dc = 32 - a / (128 / 32);
+		display_figure(figure);
+		for (uint8_t d = 0; d < dc; d++) _delay_us(255); 
+		display_figure(0);
+		for (uint8_t d = dc; d < 32; d++) _delay_us(255); 
+		if (button_down()) return;
 	}
 
 	sleep();
