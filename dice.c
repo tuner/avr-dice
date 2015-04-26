@@ -270,8 +270,8 @@ static void welcome() {
 
 int main(void) {
 
-	DDRA = 0b0111111;
-	DDRB = 0b0000001;
+	DDRA = 0b01111111;
+	DDRB = 0b00000001;
 
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Conserve power when sleeping
 	ADCSRA = 0; // Disable ADC
